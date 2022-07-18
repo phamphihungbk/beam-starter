@@ -1,0 +1,51 @@
+{
+	"name": "movie",
+	"type": "record",
+	"namespace": "movie_group",
+	"fields": [
+		{
+			"name": "tconst",
+			"type": "string"
+		},
+		{
+			"name": "titleType",
+			"type": "string"
+		},
+		{
+			"name": "primaryTitle",
+			"type": "string"
+		},
+		{
+			"name": "originalTitle",
+			"type": "string"
+		},
+		{
+			"name": "isAdult",
+			"type": "boolean"
+		},
+		{
+			"name": "startYear",
+			"type": "int"
+		},
+		{
+			"name": "endYear",
+			"type": "int"
+		},
+		{
+			"name": "runtimeMinutes",
+			"type": "int"
+		},
+		{
+			"name": "genres",
+			"type": "string"
+		},
+		{
+			"name": "averageRating",
+			"type": "int"
+		},
+		{
+			"name": "numVotes",
+			"type": "int"
+		}
+	]
+}

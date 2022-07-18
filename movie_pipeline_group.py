@@ -3,14 +3,33 @@ import csv
 import itertools
 
 import apache_beam as beam
-
+from fastavro.schema import load_schema
 from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
 
 from utils.service_factory import ServiceFactory
 
+class ParseCsv(beam.DoFn):
+    """Parse a CSV file into a dict
+    """
+    def __init__(self, col_names: list):
+        self.col_names = col_names
+
+    def process(self, string: str):
+        reader = csv.DictReader(string.splitlines(), fieldnames=self.col_names, delimiter='\t')
+        for row in reader:
+            yield row
+
 
 class CleanData(beam.DoFn):
+    """Cleans the data, transforms types
+    """
     def __init__(self, bool_cols=[], int_cols=[], float_cols=[]):
+        """Cleans the data, transforms types
+        Args:
+            bool_cols (list, optional): Boolean columns mapped from 0/1->True/False. Defaults to [].
+            int_cols (list, optional): Integer columns to convert. Defaults to [].
+            float_cols (list, optional): Float columns to convert. Defaults to [].
+        """
         self.bool_cols = bool_cols
         self.int_cols = int_cols
         self.float_cols = float_cols
@@ -36,13 +55,16 @@ class CleanData(beam.DoFn):
 
     def process(self, record: dict):
         for k in record:
+            # Map \N to None
             if record[k] == '\\N':
                 record[k] = None
+        # Convert types
         for col in self.bool_cols:
             if record[col] == '0':
                 record[col] = False
             else:
                 record[col] = True
+        # This is for demonstrative purposes and can be simplified
         record = self._parse_numeric(record, 'int')
         record = self._parse_numeric(record, 'float')
 
@@ -51,16 +73,19 @@ class CleanData(beam.DoFn):
 
 
 class FilterRatingData(beam.DoFn):
+    """Filters rating data that has a rating less than 5"""
     def process(self, record: dict):
         if record['averageRating'] and record['averageRating'] >= 5.0:
             yield record
 
 
 class FilterBasicData(beam.DoFn):
+    """Filters base data that is not a movie, an adult movie, or from before 1970"""
     def process(self, record: dict):
         #print(record)
         if record['titleType'] == 'movie' and not record['isAdult'] and record['startYear'] and record['startYear'] >= 1970:
             yield record
+        # No else - no yield
 
 
 class GetAttribute(beam.DoFn):
@@ -94,8 +119,9 @@ def run():
     pipeline_options = PipelineOptions(pipeline_args)
     pipeline_options.view_as(SetupOptions).save_main_session = True
 
-    columns_title_basic = ['tconst', 'titleType', 'primaryTitle',
-                           'originalTitle',
+    movie_group = load_schema('./schema/movie_group.avsc')
+
+    columns_title_basic = ['tconst', 'titleType', 'primaryTitle', 'originalTitle',
                            'isAdult', 'startYear', 'endYear', 'runtimeMinutes',
                            'genres']
     columns_ratings = ['tconst', 'averageRating', 'numVotes']
@@ -107,12 +133,44 @@ def run():
                     | 'Filter data' >> beam.ParDo(FilterBasicData())
                     )
 
+        rating_data = (p | 'Read data (Details)' >> beam.io.ReadFromText(known_args.input_ratings, skip_header_lines=1)
+                       | 'Parse CSV (Details)' >> beam.ParDo(ParseCsv(columns_ratings))
+                       | 'Clean data (Details)' >> beam.ParDo(CleanData(int_cols=['numVotes'], float_cols=['averageRating']))
+                       | 'Filter data (Details)' >> beam.ParDo(FilterRatingData())
+                       )
+
+        # Create keys
+        # https://beam.apache.org/documentation/transforms/python/aggregation/cogroupbykey/
+        movie_keys = (basic_data
+                      | 'movie key' >> beam.Map(lambda r: (r['tconst'], r))
+                      # | 'Print' >> beam.Map(print)
+                      )
+        rating_keys = (rating_data
+                       | 'rating key' >> beam.Map(lambda r: (r['tconst'], r))
+                       )
+
+        # Join the PCollections
+        joined_dicts = (
+            {'movie_keys': movie_keys, 'rating_keys': rating_keys}
+            | beam.CoGroupByKey()
+            | beam.FlatMap(join_ratings)
+            | 'mergedicts' >> beam.Map(lambda dd: {**dd[0], **dd[1]})
+        )
+
+        # Write to disk
+        # joined_dicts | 'write' >> beam.io.WriteToText(known_args.output)
+        joined_dicts | 'write' >> beam.io.WriteToAvro(
+            file_path_prefix='./output/movie_group',
+            schema=movie_group,
+            file_name_suffix='.avro'
+        )
+
         result = p.run()
         result.wait_until_finish()
 
 if __name__ == '__main__':
     logger = ServiceFactory.get_logger('movie-pipeline-group')
-    logger.info('Finish')
+    logger.info('Start')
     run()
-    logger.info('Starting')
+    logger.info('Finish')
 
